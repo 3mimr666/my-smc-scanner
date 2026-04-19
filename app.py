@@ -14,13 +14,14 @@ st.markdown("""
 
 st.title("📊 Amimar SMC Pro Scanner")
 
+# --- التعديل فـ قائمة العملات ---
 assets = {
+    "Gold (XAUUSD)": "GC=F",  # جرب هاد الرمز (Futures) كيكون أدق فـ Yahoo Finance
     "Bitcoin (BTC)": "BTC-USD",
-    "XAUUSD (Gold)": "XAUUSD=X",
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
     "NAS100 (Nasdaq)": "^NDX"
-}
+    }
 
 def calculate_smc(df):
     df = df.copy()
