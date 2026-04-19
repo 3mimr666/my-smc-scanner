@@ -14,9 +14,9 @@ st.markdown("""
 
 st.title("📊 Amimar SMC Pro Scanner (OANDA Data Style)")
 
-# الرموز اللي كتكون متطابقة مع OANDA فـ Yahoo Finance
+# القائمة الأساسية
 assets = {
-    "Gold (XAUUSD)": "XAUUSD=X",  # السعر الفوري العالمي
+    "Gold (XAUUSD)": "XAUUSD=X",
     "Bitcoin (BTC)": "BTC-USD",
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
@@ -24,14 +24,14 @@ assets = {
 }
 
 def calculate_smc(df):
+    if df is None or df.empty: return None
     df = df.copy()
-    if df.empty: return df
     
-    # تنظيف المولتيايندكس (حل مشكل الخطأ اللي طلع ليك)
+    # تنظيف الأعمدة
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    # حساب الـ SMC
+    # حسابات SMC أساسية
     df['Body'] = (df['Close'] - df['Open']).abs()
     avg_body = df['Body'].rolling(10).mean()
     
@@ -45,18 +45,21 @@ def calculate_smc(df):
     df['CHoCH_Bear'] = df['Close'] < df['Low'].shift(1).rolling(20).min()
     return df
 
-@st.cache_data(ttl=30) # تحديث كل 30 ثانية
+@st.cache_data(ttl=60)
 def fetch_all_data():
     results = {}
     for name, symbol in assets.items():
         try:
-            # كنستعملو هاد الطريقة باش نجيبو أدق سعر إغلاق
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(period="5d", interval="15m")
+            # محاولة جلب داتا 15 دقيقة (للمضاربة)
+            data = yf.download(symbol, period="5d", interval="15m", progress=False, auto_adjust=True)
+            
+            # إيلا كانت خاوية (بسباب الويكاند)، جيب داتا يومية باش يبان الثمن
+            if data.empty:
+                data = yf.download(symbol, period="5d", interval="1d", progress=False, auto_adjust=True)
             
             if not data.empty:
                 results[name] = calculate_smc(data)
-        except:
+        except Exception as e:
             continue
     return results
 
@@ -66,25 +69,33 @@ data_dict = fetch_all_data()
 if data_dict:
     cols = st.columns(len(data_dict))
     for i, (name, df) in enumerate(data_dict.items()):
-        last_price = df['Close'].iloc[-1]
+        if df is None or df.empty: continue
         
-        # تحديد السعر واش هابط ولا طالع مقارنة بالشمعة اللي قبل
-        delta = float(last_price - df['Close'].iloc[-2])
+        last_price = float(df['Close'].iloc[-1])
+        # حساب التغير (Delta)
+        prev_price = float(df['Close'].iloc[-2])
+        change = last_price - prev_price
+        
+        status = "Bullish 🚀" if df['CHoCH_Bull'].iloc[-3:].any() else ("Bearish 🩸" if df['CHoCH_Bear'].iloc[-3:].any() else "Neutral ⚖️")
         
         with cols[i]:
-            st.metric(label=name.split()[0], value=f"{float(last_price):.2f}", delta=f"{delta:.2f}")
+            st.metric(label=name.split()[0], value=f"{last_price:.2f}", delta=f"{change:.2f}")
+            st.caption(status)
 
-    # تفاصيل الـ SMC
+    st.markdown("---")
     tabs = st.tabs(list(data_dict.keys()))
     for i, (name, df) in enumerate(data_dict.items()):
         with tabs[i]:
-            st.write(f"### {name} Analysis")
             c1, c2 = st.columns(2)
             with c1:
-                if df['CHoCH_Bull'].iloc[-5:].any(): st.success("🚀 Bullish CHoCH (Structure Break)")
-                if df['CHoCH_Bear'].iloc[-5:].any(): st.error("🩸 Bearish CHoCH (Structure Break)")
+                st.write("🔍 **FVG Status**")
+                if df['FVG_Bull'].iloc[-5:].any(): st.success("🟢 FVG Bullish")
+                elif df['FVG_Bear'].iloc[-5:].any(): st.error("🔴 FVG Bearish")
+                else: st.write("⚪ No recent FVG")
             with c2:
-                if df['FVG_Bull'].iloc[-3:].any(): st.info("🟢 FVG Bullish")
-                if df['OB_Bull'].iloc[-5:].any(): st.info("📦 Order Block Bullish")
+                st.write("📦 **Structure (OB)**")
+                if df['OB_Bull'].iloc[-10:].any(): st.info("🟢 OB Bullish")
+                elif df['OB_Bear'].iloc[-10:].any(): st.warning("🔴 OB Bearish")
+                else: st.write("⚪ No clear OB")
 
-st.caption(f"Last Refresh: {datetime.now().strftime('%H:%M:%S')} | Data Source: Spot Market (OANDA Style)")
+st.caption(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Weekend Mode Active")
