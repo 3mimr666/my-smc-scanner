@@ -100,5 +100,3 @@ else:
     st.info("SMC Analysis is waiting for market open. Prices are shown above.")
 
 st.caption(f"Refreshed at: {datetime.now().strftime('%H:%M:%S')}")
-                    if df['OB_Bull'].iloc[-5:].any(): st.info("📦 Order Block Active")
-
