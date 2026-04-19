@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Amimar SMC Scanner", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Amimar SMC Pro", page_icon="📈", layout="wide")
 
 st.markdown("""
     <style>
@@ -15,63 +15,90 @@ st.markdown("""
 
 st.title("📊 Amimar SMC Pro Scanner")
 
-# الرموز - جربت ليك هاد الرموز اللي كيعطيو داتا مستقرة ف الويكاند
+# الرموز اللي كتخدم مزيان ف الويكاند وكتعطي داتا للتحليل
 assets = {
-    "Gold (XAUUSD)": "GC=F",   # الذهب (Futures) كيعطي آخر ثمن إغلاق ديما
-    "Bitcoin (BTC)": "BTC-USD",
+    "Gold": "GC=F",   # الذهب (Futures) باش يبان السعر والتحليل ديما
+    "Bitcoin": "BTC-USD",
     "EURUSD": "EURUSD=X",
-    "NAS100 (Nasdaq)": "^NDX"
+    "NAS100": "^NDX"
 }
 
-@st.cache_data(ttl=60)
-def get_data(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        # محاولة جلب داتا يومية لضمان وجود السعر
-        df = ticker.history(period="5d", interval="1d")
-        
-        # إيلا بغينا الـ SMC نجبدو داتا 15 دقيقة
-        df_15m = ticker.history(period="2d", interval="15m")
-        
-        if not df.empty:
-            last_price = df['Close'].iloc[-1]
-            return df_15m if not df_15m.empty else df, last_price
-        return None, 0
-    except:
-        return None, 0
-
 def calculate_smc(df):
-    if df is None or df.empty: return None
+    if df is None or len(df) < 20: return None
     df = df.copy()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     
+    # حسابات SMC
     df['Body'] = (df['Close'] - df['Open']).abs()
     avg_body = df['Body'].rolling(10).mean()
-    df['CHoCH_Bull'] = df['Close'] > df['High'].shift(1).rolling(15).max()
-    df['CHoCH_Bear'] = df['Close'] < df['Low'].shift(1).rolling(15).min()
+    
+    # Fair Value Gaps
+    df['FVG_Bull'] = (df['Low'] > df['High'].shift(2))
+    df['FVG_Bear'] = (df['High'] < df['Low'].shift(2))
+    
+    # Order Blocks
+    df['OB_Bull'] = (df['Close'].shift(1) < df['Open'].shift(1)) & (df['Close'] > df['Open']) & (df['Body'] > avg_body * 1.5)
+    df['OB_Bear'] = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Close'] < df['Open']) & (df['Body'] > avg_body * 1.5)
+    
+    # Structure Break (CHoCH)
+    df['CHoCH_Bull'] = df['Close'] > df['High'].shift(1).rolling(20).max()
+    df['CHoCH_Bear'] = df['Close'] < df['Low'].shift(1).rolling(20).min()
     return df
 
-# --- عرض الأثمنة ---
-st.subheader("🚀 Live Market Prices")
-cols = st.columns(len(assets))
-
-for i, (name, symbol) in enumerate(assets.items()):
-    df, price = get_data(symbol)
-    
-    with cols[i]:
-        # إيلا كان الذهب، كنضربو الثمن فـ 1 (للتأكد) ونعرضوه
-        display_name = name.split()[0]
-        st.metric(label=display_name, value=f"{float(price):.2f}")
+@st.cache_data(ttl=60)
+def fetch_data(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        # كنجيبو داتا ديال 5 أيام بـ فريم 15 دقيقة باش نضمنو كاين ما يتحلل
+        data = ticker.history(period="5d", interval="15m")
         
-        smc_df = calculate_smc(df)
-        if smc_df is not None:
-            if smc_df['CHoCH_Bull'].iloc[-1]: st.caption("Bullish 🚀")
-            elif smc_df['CHoCH_Bear'].iloc[-1]: st.caption("Bearish 🩸")
-            else: st.caption("Neutral ⚖️")
-        else:
-            st.caption("Market Closed")
+        # إيلا كانت الداتا ديال 15 دقيقة خاوية (بسباب الويكاند)، كنجيبو اليومية
+        if data.empty:
+            data = ticker.history(period="1mo", interval="1d")
+            
+        return data
+    except:
+        return None
+
+# --- الـ DASHBOARD ---
+data_dict = {}
+for name, sym in assets.items():
+    df = fetch_data(sym)
+    if df is not None and not df.empty:
+        data_dict[name] = calculate_smc(df)
+
+# عرض الأثمنة والتحليل السريع
+if data_dict:
+    cols = st.columns(len(data_dict))
+    for i, (name, df) in enumerate(data_dict.items()):
+        last_price = float(df['Close'].iloc[-1])
+        status = "Bullish 🚀" if df['CHoCH_Bull'].iloc[-1] else ("Bearish 🩸" if df['CHoCH_Bear'].iloc[-1] else "Neutral ⚖️")
+        with cols[i]:
+            st.metric(label=name, value=f"{last_price:.2f}")
+            st.caption(status)
 
 st.markdown("---")
-st.info("💡 ملاحظة: الذهب (Gold) معروض بسعر العقود الآجلة لضمان الظهور في الويكاند.")
-st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')}")
+
+# تفاصيل التحليل (التابات)
+if data_dict:
+    tabs = st.tabs(list(data_dict.keys()))
+    for i, (name, df) in enumerate(data_dict.items()):
+        with tabs[i]:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("🔍 Smart Money Signals")
+                # كنشوفو آخر 5 شمعات واش فيهم إشارة
+                if df['FVG_Bull'].tail(5).any(): st.success("🟢 Bullish FVG Detected")
+                if df['FVG_Bear'].tail(5).any(): st.error("🔴 Bearish FVG Detected")
+                if not df['FVG_Bull'].tail(5).any() and not df['FVG_Bear'].tail(5).any():
+                    st.write("No FVG signals in the last candles.")
+            
+            with c2:
+                st.subheader("📦 Supply & Demand")
+                if df['OB_Bull'].tail(10).any(): st.info("🔵 Bullish Order Block")
+                if df['OB_Bear'].tail(10).any(): st.warning("🟠 Bearish Order Block")
+                if not df['OB_Bull'].tail(10).any() and not df['OB_Bear'].tail(10).any():
+                    st.write("No strong Order Blocks found.")
+
+st.caption(f"Refreshed: {datetime.now().strftime('%H:%M:%S')} | Full Analysis Mode")
