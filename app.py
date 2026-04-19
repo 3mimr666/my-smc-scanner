@@ -9,102 +9,96 @@ st.set_page_config(page_title="Amimar SMC Scanner", page_icon="📈", layout="wi
 st.markdown("""
     <style>
     .stApp { background-color: #0E1117; color: white; }
+    .stMetric { background-color: #1E2127; padding: 10px; border-radius: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 Amimar SMC Pro Scanner (OANDA Style)")
+st.title("📊 Amimar SMC Pro Scanner")
 
-# الرموز مرتبة
 assets = {
     "Gold (XAUUSD)": "XAUUSD=X",
     "Bitcoin (BTC)": "BTC-USD",
     "EURUSD": "EURUSD=X",
-    "GBPUSD": "GBPUSD=X",
     "NAS100 (Nasdaq)": "^NDX"
 }
 
 def calculate_smc(df):
-    if df is None or len(df) < 20: return None
-    df = df.copy()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    df['Body'] = (df['Close'] - df['Open']).abs()
-    avg_body = df['Body'].rolling(10).mean()
-    
-    df['FVG_Bull'] = (df['Low'] > df['High'].shift(2))
-    df['FVG_Bear'] = (df['High'] < df['Low'].shift(2))
-    
-    df['OB_Bull'] = (df['Close'].shift(1) < df['Open'].shift(1)) & (df['Close'] > df['Open']) & (df['Body'] > avg_body * 1.5)
-    df['OB_Bear'] = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Close'] < df['Open']) & (df['Body'] > avg_body * 1.5)
-    
-    df['CHoCH_Bull'] = df['Close'] > df['High'].shift(1).rolling(20).max()
-    df['CHoCH_Bear'] = df['Close'] < df['Low'].shift(1).rolling(20).min()
-    return df
+    try:
+        if df is None or len(df) < 10: return None
+        df = df.copy()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        
+        df['Body'] = (df['Close'] - df['Open']).abs()
+        avg_body = df['Body'].rolling(10).mean()
+        df['FVG_Bull'] = (df['Low'] > df['High'].shift(2))
+        df['OB_Bull'] = (df['Close'].shift(1) < df['Open'].shift(1)) & (df['Close'] > df['Open']) & (df['Body'] > avg_body * 1.5)
+        df['CHoCH_Bull'] = df['Close'] > df['High'].shift(1).rolling(20).max()
+        df['CHoCH_Bear'] = df['Close'] < df['Low'].shift(1).rolling(20).min()
+        return df
+    except:
+        return None
 
 @st.cache_data(ttl=60)
-def fetch_all_data():
-    results = {}
-    for name, symbol in assets.items():
-        try:
-            ticker = yf.Ticker(symbol)
-            # محاولة جلب البيانات بـ 3 طرق لضمان الظهور
-            data = ticker.history(period="5d", interval="15m")
-            
-            if data.empty:
-                data = ticker.history(period="1mo", interval="1d")
-            
-            # إيلا بقات خاوية، كنصاوبو شمعة وهمية بآخر ثمن معروف (باش ما يغبرش الذهب)
-            if data.empty:
-                last_price = ticker.fast_info['last_price']
-                data = pd.DataFrame([{
-                    'Open': last_price, 'High': last_price, 
-                    'Low': last_price, 'Close': last_price
-                }], index=[datetime.now()])
-            
-            results[name] = calculate_smc(data)
-        except:
-            continue
-    return results
+def get_asset_data(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        # محاولة جلب داتا فريم صغير
+        df = ticker.history(period="5d", interval="15m")
+        if df.empty:
+            df = ticker.history(period="5d", interval="1d")
+        
+        # جلب آخر ثمن حي (حتى لو السوق مغلق)
+        info = ticker.fast_info
+        last_price = info.get('last_price', None)
+        
+        return df, last_price
+    except:
+        return None, None
 
-data_dict = fetch_all_data()
+# --- الـ DASHBOARD ---
+st.subheader("🚀 Live Market Prices")
+cols = st.columns(len(assets))
 
-# --- DISPLAY ---
-if data_dict:
-    cols = st.columns(len(data_dict))
-    for i, (name, df) in enumerate(data_dict.items()):
-        # استخراج آخر ثمن
-        if df is not None:
-            current_price = float(df['Close'].iloc[-1])
-            prev_price = float(df['Close'].iloc[-2]) if len(df) > 1 else current_price
-            diff = current_price - prev_price
+processed_data = {}
+
+for i, (name, symbol) in enumerate(assets.items()):
+    df, live_price = get_asset_data(symbol)
+    
+    # إيلا ما لقا الداتا، كياخد آخر ثمن إغلاق من الـ df
+    display_price = live_price if live_price else (df['Close'].iloc[-1] if not df.empty else 0)
+    
+    with cols[i]:
+        st.metric(label=name, value=f"{display_price:.2f}")
+        
+        # تحليل SMC إيلا توفرت الداتا
+        smc_df = calculate_smc(df)
+        if smc_df is not None:
+            processed_data[name] = smc_df
+            status = "Bullish 🚀" if smc_df['CHoCH_Bull'].iloc[-1] else ("Bearish 🩸" if smc_df['CHoCH_Bear'].iloc[-1] else "Neutral ⚖️")
+            st.caption(status)
         else:
-            # حالة طارئة إيلا الداتا منعدمة
-            t = yf.Ticker(assets[name])
-            current_price = t.fast_info['last_price']
-            diff = 0
+            st.caption("Market Closed (OANDA Style)")
 
-        with cols[i]:
-            st.metric(label=name.split()[0], value=f"{current_price:.2f}", delta=f"{diff:.2f}")
-            if df is not None:
-                status = "Bullish 🚀" if df['CHoCH_Bull'].iloc[-3:].any() else ("Bearish 🩸" if df['CHoCH_Bear'].iloc[-3:].any() else "Neutral ⚖️")
-                st.caption(status)
+# --- DETAILS ---
+st.markdown("---")
+if processed_data:
+    tabs = st.tabs(list(processed_data.keys()))
+    for i, name in enumerate(processed_data.keys()):
+        with tabs[i]:
+            df = processed_data[name]
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("🔍 **Smart Money Signals**")
+                if df['FVG_Bull'].tail(5).any(): st.success("🟢 FVG Found")
+                else: st.write("No Signal")
+            with c2:
+                st.write("📦 **Order Blocks**")
+                if df['OB_Bull'].tail(10).any(): st.info("🟢 Strong OB")
+                else: st.write("Searching...")
+else:
+    st.info("SMC Analysis is waiting for market open. Prices are shown above.")
 
-    st.markdown("---")
-    # عرض التابات (Tabs)
-    valid_keys = [k for k, v in data_dict.items() if v is not None]
-    if valid_keys:
-        tabs = st.tabs(valid_keys)
-        for i, name in enumerate(valid_keys):
-            df = data_dict[name]
-            with tabs[i]:
-                c1, c2 = st.columns(2)
-                with c1:
-                    if df['CHoCH_Bull'].iloc[-5:].any(): st.success("🚀 Structure: Bullish Break")
-                    elif df['CHoCH_Bear'].iloc[-5:].any(): st.error("🩸 Structure: Bearish Break")
-                    else: st.write("⚖️ Structure: Range")
-                with c2:
-                    if df['FVG_Bull'].iloc[-3:].any(): st.info("🟢 FVG Found")
+st.caption(f"Refreshed at: {datetime.now().strftime('%H:%M:%S')}")
                     if df['OB_Bull'].iloc[-5:].any(): st.info("📦 Order Block Active")
 
-st.caption(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Forced Price Sync Active")
