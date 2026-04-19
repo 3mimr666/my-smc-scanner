@@ -12,9 +12,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 Amimar SMC Pro Scanner (OANDA Data Style)")
+st.title("📊 Amimar SMC Pro Scanner (OANDA Style)")
 
-# القائمة الأساسية
+# الرموز مرتبة
 assets = {
     "Gold (XAUUSD)": "XAUUSD=X",
     "Bitcoin (BTC)": "BTC-USD",
@@ -24,14 +24,11 @@ assets = {
 }
 
 def calculate_smc(df):
-    if df is None or df.empty: return None
+    if df is None or len(df) < 20: return None
     df = df.copy()
-    
-    # تنظيف الأعمدة
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    # حسابات SMC أساسية
     df['Body'] = (df['Close'] - df['Open']).abs()
     avg_body = df['Body'].rolling(10).mean()
     
@@ -50,16 +47,23 @@ def fetch_all_data():
     results = {}
     for name, symbol in assets.items():
         try:
-            # محاولة جلب داتا 15 دقيقة (للمضاربة)
-            data = yf.download(symbol, period="5d", interval="15m", progress=False, auto_adjust=True)
+            ticker = yf.Ticker(symbol)
+            # محاولة جلب البيانات بـ 3 طرق لضمان الظهور
+            data = ticker.history(period="5d", interval="15m")
             
-            # إيلا كانت خاوية (بسباب الويكاند)، جيب داتا يومية باش يبان الثمن
             if data.empty:
-                data = yf.download(symbol, period="5d", interval="1d", progress=False, auto_adjust=True)
+                data = ticker.history(period="1mo", interval="1d")
             
-            if not data.empty:
-                results[name] = calculate_smc(data)
-        except Exception as e:
+            # إيلا بقات خاوية، كنصاوبو شمعة وهمية بآخر ثمن معروف (باش ما يغبرش الذهب)
+            if data.empty:
+                last_price = ticker.fast_info['last_price']
+                data = pd.DataFrame([{
+                    'Open': last_price, 'High': last_price, 
+                    'Low': last_price, 'Close': last_price
+                }], index=[datetime.now()])
+            
+            results[name] = calculate_smc(data)
+        except:
             continue
     return results
 
@@ -69,33 +73,38 @@ data_dict = fetch_all_data()
 if data_dict:
     cols = st.columns(len(data_dict))
     for i, (name, df) in enumerate(data_dict.items()):
-        if df is None or df.empty: continue
-        
-        last_price = float(df['Close'].iloc[-1])
-        # حساب التغير (Delta)
-        prev_price = float(df['Close'].iloc[-2])
-        change = last_price - prev_price
-        
-        status = "Bullish 🚀" if df['CHoCH_Bull'].iloc[-3:].any() else ("Bearish 🩸" if df['CHoCH_Bear'].iloc[-3:].any() else "Neutral ⚖️")
-        
+        # استخراج آخر ثمن
+        if df is not None:
+            current_price = float(df['Close'].iloc[-1])
+            prev_price = float(df['Close'].iloc[-2]) if len(df) > 1 else current_price
+            diff = current_price - prev_price
+        else:
+            # حالة طارئة إيلا الداتا منعدمة
+            t = yf.Ticker(assets[name])
+            current_price = t.fast_info['last_price']
+            diff = 0
+
         with cols[i]:
-            st.metric(label=name.split()[0], value=f"{last_price:.2f}", delta=f"{change:.2f}")
-            st.caption(status)
+            st.metric(label=name.split()[0], value=f"{current_price:.2f}", delta=f"{diff:.2f}")
+            if df is not None:
+                status = "Bullish 🚀" if df['CHoCH_Bull'].iloc[-3:].any() else ("Bearish 🩸" if df['CHoCH_Bear'].iloc[-3:].any() else "Neutral ⚖️")
+                st.caption(status)
 
     st.markdown("---")
-    tabs = st.tabs(list(data_dict.keys()))
-    for i, (name, df) in enumerate(data_dict.items()):
-        with tabs[i]:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.write("🔍 **FVG Status**")
-                if df['FVG_Bull'].iloc[-5:].any(): st.success("🟢 FVG Bullish")
-                elif df['FVG_Bear'].iloc[-5:].any(): st.error("🔴 FVG Bearish")
-                else: st.write("⚪ No recent FVG")
-            with c2:
-                st.write("📦 **Structure (OB)**")
-                if df['OB_Bull'].iloc[-10:].any(): st.info("🟢 OB Bullish")
-                elif df['OB_Bear'].iloc[-10:].any(): st.warning("🔴 OB Bearish")
-                else: st.write("⚪ No clear OB")
+    # عرض التابات (Tabs)
+    valid_keys = [k for k, v in data_dict.items() if v is not None]
+    if valid_keys:
+        tabs = st.tabs(valid_keys)
+        for i, name in enumerate(valid_keys):
+            df = data_dict[name]
+            with tabs[i]:
+                c1, c2 = st.columns(2)
+                with c1:
+                    if df['CHoCH_Bull'].iloc[-5:].any(): st.success("🚀 Structure: Bullish Break")
+                    elif df['CHoCH_Bear'].iloc[-5:].any(): st.error("🩸 Structure: Bearish Break")
+                    else: st.write("⚖️ Structure: Range")
+                with c2:
+                    if df['FVG_Bull'].iloc[-3:].any(): st.info("🟢 FVG Found")
+                    if df['OB_Bull'].iloc[-5:].any(): st.info("📦 Order Block Active")
 
-st.caption(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Weekend Mode Active")
+st.caption(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Forced Price Sync Active")
